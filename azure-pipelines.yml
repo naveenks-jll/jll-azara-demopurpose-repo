@@ -1,0 +1,119 @@
+trigger:
+- main
+
+pool:
+  vmImage: 'ubuntu-latest'
+strategy:
+  matrix:
+    Python38:
+      python.version: '3.8'
+
+steps:
+- task: UsePythonVersion@0
+  inputs:
+    versionSpec: '$(python.version)'
+  displayName: 'Use Python $(python.version)'
+
+- script: |
+   pip install twine
+  displayName: 'Install Twine'
+
+# Uncomment this task after building initial version of the package
+# Once the package is built, add pipeline variables PACKAGE_ID :- Find your package id using the below link
+# "https://feeds.dev.azure.com/dp-red2-org-devops/63e7eb7c-1a78-47b5-b6ee-00dfa7d36334/_apis/Packaging/Feeds/5fb94e8a-b1f2-44fb-a83b-5c11ce604e74/Packages"
+# - script: |
+#     export azureusername=$(azureusername)
+#     export azurepassword=$(azurepassword)
+#     export PACKAGE_ID=$(PACKAGE_ID)
+#     python setup_version.py
+#   displayName: 'Setup version'
+
+- script: |
+    python setup.py sdist
+  displayName: 'Artifact creation'
+
+- task: CopyFiles@2
+  inputs:
+    targetFolder: $(Build.ArtifactStagingDirectory)
+
+- task: PublishBuildArtifacts@1
+  inputs:
+    PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+    ArtifactName: 'JLL-AZARA-V2-PYTHON-SDKS'
+    publishLocation: 'Container'
+
+- task: TwineAuthenticate@1
+  displayName: 'Twine Authenticate '
+  inputs:
+    artifactFeed: 'AzaraDevOps/JLL-AZARA-V2-PYTHON-SDKS'
+
+- task: PipAuthenticate@1
+  inputs:
+    artifactFeeds: 'AzaraDevOps/JLL-AZARA-V2-PYTHON-SDKS'
+    onlyAddExtraIndex: true
+
+- script: |
+   pip install -r requirements.txt
+  displayName: 'Install dependencies'
+
+
+- script: |
+    python setup.py install
+  displayName: 'Installing library'
+
+- script: |
+    pylint --fail-under=7 demopurposepkg
+  displayName: 'Run Pylint'
+
+# Uncomment the below task if you need mypy validation
+# - script: |
+#     mypy demopurposepkg
+#   displayName: 'Run MyPy'
+
+# How to add documentation PR?
+
+- task: DownloadPackage@1
+  inputs:
+    packageType: 'upack'
+    feed: '/dc0e25f6-1856-4c93-87d0-89c653237ba3'
+    view: '1f4dfcc0-76bf-47df-929b-2e66531a1af9'
+    definition: 'be39954c-f4e0-4de5-9591-99b52fedb3bc'
+    version: '0.0.1'
+    downloadPath: '$(System.DefaultWorkingDirectory)'
+
+# Add pipeline environment variables
+- task: shellexec@0
+  inputs:
+    code: |
+      set -x
+      #Code Climate needs GIT_BRANCH to be set.
+      if [ -z "${SYSTEM_PULLREQUEST_SOURCEBRANCH}" ]
+      then
+      export GIT_BRANCH=${BUILD_SOURCEBRANCHNAME}
+      else
+      export GIT_BRANCH=${SYSTEM_PULLREQUEST_SOURCEBRANCH}
+      fi
+      export CC_TEST_REPORTER_ID=$(SDK_ENV_REPORT_ID)
+      unzip $(System.DefaultWorkingDirectory)/dp-red2-codeclimate.zip -d codeclimate
+      chmod +x $(System.DefaultWorkingDirectory)/codeclimate/test-reporter-latest-linux-amd64
+      cd $(System.DefaultWorkingDirectory)
+      #Run the before build to intimate codeclimate about the build
+      ./codeclimate/test-reporter-latest-linux-amd64 before-build --debug
+      pytest tests --doctest-modules --junitxml=junit/test-results.xml --cov-report=xml --cov-report=html --cov=demopurposepkg
+      ./codeclimate/test-reporter-latest-linux-amd64 after-build --debug
+
+- task: PublishTestResults@2
+  condition: succeededOrFailed()
+  inputs:
+    testResultsFiles: '**/test-*.xml'
+    testRunTitle: 'Publish test results for Python $(python.version)'
+
+- task: PublishCodeCoverageResults@1
+  inputs:
+    codeCoverageTool: Cobertura
+    summaryFileLocation: '$(System.DefaultWorkingDirectory)/**/coverage.xml'
+    reportDirectory: '$(System.DefaultWorkingDirectory)/**/htmlcov'
+
+- script: 'twine upload -r JLL-AZARA-V2-PYTHON-SDKS --config-file $(PYPIRC_PATH)  $(Build.ArtifactStagingDirectory)/dist/*'
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  displayName: 'Publish Artifact'
